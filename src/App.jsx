@@ -5,10 +5,14 @@ import { invoke } from '@tauri-apps/api/core';
 
 export default function App() {
   const [meetings, setMeetings] = useState([]);
+  const [upNextMeeting, setUpNextMeeting] = useState({});
+  const [laterMeetings, setUpLaterMeetings] = useState([]);
   const [activeAlert, setActiveAlert] = useState(null);
   const [currentTime, setCurrentTime] = useState(new Date());
   const [loading, setLoading] = useState(false);
   const [permissionError, setPermissionError] = useState(false);
+
+  const ALERT_THRESHOLD = 5000;
 
   // --- Helper: Extract Link ---
   const extractVideoLink = (event) => {
@@ -40,7 +44,8 @@ export default function App() {
     setLoading(true);
     try {
       const result = await invoke('get_calendar_events');
-      console.log("Calendar Data:", result);
+      const eod = new Date();
+      eod.setHours(23, 59, 59, 999);
       
       const rawEvents = JSON.parse(result);
       
@@ -59,9 +64,14 @@ export default function App() {
           };
         })
         .sort((a, b) => a.start - b.start)
-        .filter(ev => ev.start > new Date() && !ev.isAllDay); 
+        .filter(ev => new Date(ev.start) > new Date() && new Date(ev.start) < eod && !ev.isAllDay); 
 
       setMeetings(processed);
+
+      const nextMeeting = processed.find(ev => new Date(ev.start) > new Date());
+      setUpNextMeeting(nextMeeting);
+      setUpLaterMeetings(processed.filter(ev => new Date(ev.start) > new Date() && ev.id !== nextMeeting.id));
+      
       setPermissionError(false);
     } catch (error) {
       console.error("Failed to fetch meetings:", error);
@@ -97,19 +107,29 @@ export default function App() {
     }
   }, [activeAlert]);
 
+  useEffect(() => {
+    setUpLaterMeetings(meetings.filter(ev => new Date(ev.start) > new Date() && ev.id !== upNextMeeting.id));
+  }, [upNextMeeting]);
+
   const checkMeetings = (now) => {
     if (activeAlert) return;
     
     meetings.forEach(meeting => {
       const timeDiff = meeting.start - now;
-      if (timeDiff > 0 && timeDiff < 5000) {
+      if (timeDiff > 0 && timeDiff < ALERT_THRESHOLD) {
         triggerAlert(meeting);
       }
     });
   };
 
-  const triggerAlert = (meeting) => setActiveAlert(meeting);
-  const dismissAlert = () => setActiveAlert(null);
+  const triggerAlert = (meeting) => {
+    setActiveAlert(meeting);
+    setTimeout(fetchMeetings, ALERT_THRESHOLD);
+  };
+  const dismissAlert = () => {
+    setActiveAlert(null);
+    fetchMeetings();
+  };
   
   const joinMeeting = (link) => {
     if (link) {
@@ -225,48 +245,59 @@ export default function App() {
           ) : (
             <>
               {/* Next Meeting */}
-              <div className="group relative bg-neutral-900 rounded-2xl p-6 border border-neutral-800 transition-all hover:border-neutral-700">
-                <div className={`absolute left-0 top-0 bottom-0 w-1 rounded-l-2xl ${meetings[0].color}`}></div>
-                
-                <div className="flex justify-between items-end mb-3">
-                  <span className="text-neutral-500 text-[10px] font-bold tracking-widest uppercase">Up Next</span>
-                  <span className="text-red-500 font-mono font-bold text-sm animate-pulse">
-                    {getTimeUntil(meetings[0].start)}
-                  </span>
+              {upNextMeeting && Object.keys(upNextMeeting).length > 0 && (
+                <div className="group relative bg-neutral-900 rounded-2xl p-6 border border-neutral-800 transition-all hover:border-neutral-700">
+                  <div className={`absolute left-0 top-0 bottom-0 w-1 rounded-l-2xl ${upNextMeeting.color}`}></div>
+                  
+                  <div className="flex justify-between items-end mb-3">
+                    <span className="text-neutral-500 text-[10px] font-bold tracking-widest uppercase">Up Next</span>
+                    <span className="text-red-500 font-mono font-bold text-sm animate-pulse">
+                      {getTimeUntil(upNextMeeting.start)}
+                    </span>
+                  </div>
+                  
+                  <div className="mb-6">
+                    <h3 className="text-2xl font-bold text-white mb-2 leading-tight tracking-tight">{upNextMeeting.title}</h3>
+                    <div className="flex items-center gap-2 text-neutral-400 text-sm font-medium">
+                      <span className="bg-neutral-800 px-2 py-0.5 rounded text-xs text-neutral-300">{formatTime(upNextMeeting.start)}</span>
+                      <span>•</span>
+                      <span>{upNextMeeting.platform}</span>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={() => triggerAlert(upNextMeeting)} 
+                    className="w-full py-3 bg-white hover:bg-neutral-200 text-black rounded-xl font-bold text-sm transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    Check Alert now! <ChevronRight size={14} />
+                  </button>
                 </div>
-                
-                <div className="mb-6">
-                  <h3 className="text-2xl font-bold text-white mb-2 leading-tight tracking-tight">{meetings[0].title}</h3>
-                  <div className="flex items-center gap-2 text-neutral-400 text-sm font-medium">
-                    <span className="bg-neutral-800 px-2 py-0.5 rounded text-xs text-neutral-300">{formatTime(meetings[0].start)}</span>
-                    <span>•</span>
-                    <span>{meetings[0].platform}</span>
+              )}
+              
+              {/* List */}
+              {Object.keys(laterMeetings).length > 0 ? (
+                <div>
+                  <h3 className="text-neutral-500 font-bold text-[10px] mb-4 px-1 tracking-widest uppercase">Later Today</h3>
+                  <div className="space-y-2">
+                    {laterMeetings.map((meeting) => (
+                      <div key={meeting.id} className="flex items-center gap-4 p-4 bg-neutral-900/50 hover:bg-neutral-900 rounded-xl border border-transparent hover:border-neutral-800 transition-all group">
+                        <div className={`w-1 h-8 rounded-full opacity-50 group-hover:opacity-100 transition-opacity ${meeting.color}`}></div>
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-semibold text-neutral-300 group-hover:text-white truncate transition-colors">{meeting.title}</h4>
+                          <p className="text-xs text-neutral-500 mt-0.5">{formatTime(meeting.start)} • {meeting.platform}</p>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-
-                <button 
-                  onClick={() => triggerAlert(meetings[0])} 
-                  className="w-full py-3 bg-white hover:bg-neutral-200 text-black rounded-xl font-bold text-sm transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
-                >
-                  Check Alert now! <ChevronRight size={14} />
-                </button>
-              </div>
-
-              {/* List */}
-              <div>
-                <h3 className="text-neutral-500 font-bold text-[10px] mb-4 px-1 tracking-widest uppercase">Later Today</h3>
-                <div className="space-y-2">
-                  {meetings.slice(1).map((meeting) => (
-                    <div key={meeting.id} className="flex items-center gap-4 p-4 bg-neutral-900/50 hover:bg-neutral-900 rounded-xl border border-transparent hover:border-neutral-800 transition-all group">
-                      <div className={`w-1 h-8 rounded-full opacity-50 group-hover:opacity-100 transition-opacity ${meeting.color}`}></div>
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-semibold text-neutral-300 group-hover:text-white truncate transition-colors">{meeting.title}</h4>
-                        <p className="text-xs text-neutral-500 mt-0.5">{formatTime(meeting.start)} • {meeting.platform}</p>
-                      </div>
-                    </div>
-                  ))}
+              ) : (
+                <div className="text-center py-12">
+                  <div className="w-16 h-16 bg-neutral-900 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <Clock className="text-neutral-700" size={24} />
+                  </div>
+                  <p className="text-neutral-400 font-medium">No later meetings for today</p>
                 </div>
-              </div>
+              )}
             </>
           )}
         </div>
